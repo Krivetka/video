@@ -1,68 +1,132 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <title>Извлечение аудио с помощью ffmpeg.wasm</title>
-  <!-- Подключаем ffmpeg.wasm через CDN -->
-  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.5/dist/ffmpeg.min.js"></script>
+  <meta charset="UTF-8">
+  <title>Извлечение аудио и кадров</title>
 </head>
 <body>
-<h1>Извлечение аудио с помощью ffmpeg.wasm</h1>
-<input type="file" id="videoInput" accept="video/*">
+<h1>Обработка видео</h1>
+<input id="videoInput" type="file" accept="video/*">
 <br><br>
-<button id="extractAudioBtn" disabled>Извлечь аудио</button>
-<progress id="audioProgress" value="0" max="100" style="width:300px;"></progress>
-<br><br>
-<audio id="extractedAudio" controls></audio>
-
+<div>
+  <button id="extractAudioBtn" disabled>Извлечь аудио</button>
+  <a id="downloadLink" href="#" download="extracted_audio.wav" style="display: none;">Скачать аудио</a>
+</div>
+<br>
+<div>
+  <button id="extractFramesBtn" disabled>Извлечь кадры</button>
+  <progress id="framesProgress" value="0" max="100" style="width:300px;"></progress>
+</div>
+<br>
+<div id="galleryContainer" style="display:flex; overflow-x:auto; max-width:800px; border:1px solid #ccc; padding:10px;"></div>
+<video id="hiddenVideo" style="display:none;" playsinline></video>
+<canvas id="hiddenCanvas" style="display:none;"></canvas>
 <script>
-    const { createFFmpeg, fetchFile } = FFmpeg;
-    const ffmpeg = createFFmpeg({ log: true });
     const videoInput = document.getElementById('videoInput');
     const extractAudioBtn = document.getElementById('extractAudioBtn');
+    const extractFramesBtn = document.getElementById('extractFramesBtn');
+    const downloadLink = document.getElementById('downloadLink');
     const audioProgress = document.getElementById('audioProgress');
-    const extractedAudio = document.getElementById('extractedAudio');
-    let videoFile;
+    const framesProgress = document.getElementById('framesProgress');
+    const hiddenVideo = document.getElementById('hiddenVideo');
+    const hiddenCanvas = document.getElementById('hiddenCanvas');
+    const galleryContainer = document.getElementById('galleryContainer');
+    let fileBuffer = null;
 
-    videoInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            videoFile = file;
-            extractAudioBtn.disabled = false;
-        }
+    videoInput.addEventListener('change', () => {
+        const file = videoInput.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = e => { fileBuffer = e.target.result; };
+        reader.readAsArrayBuffer(file);
+        hiddenVideo.src = URL.createObjectURL(file);
+        extractAudioBtn.disabled = false;
+        extractFramesBtn.disabled = false;
     });
 
     extractAudioBtn.addEventListener('click', async () => {
+        if (!fileBuffer) return;
         extractAudioBtn.disabled = true;
-        // Загружаем ffmpeg если еще не загружен
-        if (!ffmpeg.isLoaded()) {
-            await ffmpeg.load();
-        }
-        // Обновление прогресса выполнения команды
-        ffmpeg.setProgress(({ ratio }) => {
-            audioProgress.value = ratio * 100;
-        });
-        // Записываем выбранный файл в виртуальную файловую систему ffmpeg
-        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
-
-        // Пробуем извлечь аудио без перекодирования
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
         try {
-            await ffmpeg.run('-i', 'input.mp4', '-vn', '-acodec', 'copy', 'output.m4a');
+            const audioBuffer = await audioContext.decodeAudioData(fileBuffer);
+            const wavBlob = audioBufferToWav(audioBuffer);
+            const url = URL.createObjectURL(wavBlob);
+            downloadLink.href = url;
+            downloadLink.style.display = 'block';
+            audioProgress.value = 100;
         } catch (e) {
-            // Если возникает ошибка, выполняем перекодирование в формат WebM
-            console.error('Ошибка при извлечении без перекодирования:', e);
-            await ffmpeg.run('-i', 'input.mp4', '-vn', 'output.webm');
+            console.error('Ошибка извлечения аудио:', e);
         }
-
-        // Определяем название выходного файла
-        const outputFile = ffmpeg.FS('exists', 'output.m4a') ? 'output.m4a' : 'output.webm';
-        const data = ffmpeg.FS('readFile', outputFile);
-        const blob = new Blob([data.buffer], { type: outputFile.endsWith('.m4a') ? 'audio/mp4' : 'audio/webm' });
-        const audioURL = URL.createObjectURL(blob);
-        extractedAudio.src = audioURL;
         extractAudioBtn.disabled = false;
-        audioProgress.value = 100;
     });
+
+    extractFramesBtn.addEventListener('click', () => {
+        extractFramesBtn.disabled = true;
+        galleryContainer.innerHTML = '';
+        hiddenVideo.addEventListener('loadedmetadata', extractFrames, { once: true });
+        hiddenVideo.load();
+    });
+
+    async function extractFrames() {
+        const duration = hiddenVideo.duration, step = 5, totalFrames = Math.ceil(duration / step);
+        let currentFrame = 0;
+        hiddenCanvas.width = 320; hiddenCanvas.height = 180;
+        const ctx = hiddenCanvas.getContext('2d');
+        for (let t = 0; t < duration; t += step) {
+            hiddenVideo.currentTime = t;
+            await new Promise(resolve => hiddenVideo.onseeked = resolve);
+            ctx.drawImage(hiddenVideo, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+            const img = document.createElement('img');
+            img.src = hiddenCanvas.toDataURL('image/jpeg');
+            img.style.marginRight = '5px';
+            galleryContainer.appendChild(img);
+            currentFrame++;
+            framesProgress.value = (currentFrame / totalFrames) * 100;
+        }
+        framesProgress.value = 100;
+        extractFramesBtn.disabled = false;
+    }
+
+    function audioBufferToWav(buffer) {
+        const numChannels = buffer.numberOfChannels;
+        const sampleRate = buffer.sampleRate;
+        const samples = buffer.getChannelData(0);
+        const bytesPerSample = 2;
+        const blockAlign = numChannels * bytesPerSample;
+        const bufferLength = 44 + samples.length * bytesPerSample;
+        const view = new DataView(new ArrayBuffer(bufferLength));
+
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, bufferLength - 8, true);
+        writeString(view, 8, 'WAVE');
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * blockAlign, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, 16, true);
+        writeString(view, 36, 'data');
+        view.setUint32(40, samples.length * bytesPerSample, true);
+
+        floatTo16BitPCM(view, 44, samples);
+        return new Blob([view], { type: 'audio/wav' });
+    }
+
+    function floatTo16BitPCM(output, offset, input) {
+        for (let i = 0; i < input.length; i++, offset += 2) {
+            let s = Math.max(-1, Math.min(1, input[i]));
+            output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+    }
+
+    function writeString(view, offset, string) {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    }
 </script>
 </body>
 </html>
