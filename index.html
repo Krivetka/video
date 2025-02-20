@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Извлечение аудио с помощью ffmpeg.wasm</title>
+  <!-- Подключаем ffmpeg.wasm через CDN -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.5/dist/ffmpeg.min.js"></script>
+</head>
+<body>
+<h1>Извлечение аудио с помощью ffmpeg.wasm</h1>
+<input type="file" id="videoInput" accept="video/*">
+<br><br>
+<button id="extractAudioBtn" disabled>Извлечь аудио</button>
+<progress id="audioProgress" value="0" max="100" style="width:300px;"></progress>
+<br><br>
+<audio id="extractedAudio" controls></audio>
+
+<script>
+    const { createFFmpeg, fetchFile } = FFmpeg;
+    const ffmpeg = createFFmpeg({ log: true });
+    const videoInput = document.getElementById('videoInput');
+    const extractAudioBtn = document.getElementById('extractAudioBtn');
+    const audioProgress = document.getElementById('audioProgress');
+    const extractedAudio = document.getElementById('extractedAudio');
+    let videoFile;
+
+    videoInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            videoFile = file;
+            extractAudioBtn.disabled = false;
+        }
+    });
+
+    extractAudioBtn.addEventListener('click', async () => {
+        extractAudioBtn.disabled = true;
+        // Загружаем ffmpeg если еще не загружен
+        if (!ffmpeg.isLoaded()) {
+            await ffmpeg.load();
+        }
+        // Обновление прогресса выполнения команды
+        ffmpeg.setProgress(({ ratio }) => {
+            audioProgress.value = ratio * 100;
+        });
+        // Записываем выбранный файл в виртуальную файловую систему ffmpeg
+        ffmpeg.FS('writeFile', 'input.mp4', await fetchFile(videoFile));
+
+        // Пробуем извлечь аудио без перекодирования
+        try {
+            await ffmpeg.run('-i', 'input.mp4', '-vn', '-acodec', 'copy', 'output.m4a');
+        } catch (e) {
+            // Если возникает ошибка, выполняем перекодирование в формат WebM
+            console.error('Ошибка при извлечении без перекодирования:', e);
+            await ffmpeg.run('-i', 'input.mp4', '-vn', 'output.webm');
+        }
+
+        // Определяем название выходного файла
+        const outputFile = ffmpeg.FS('exists', 'output.m4a') ? 'output.m4a' : 'output.webm';
+        const data = ffmpeg.FS('readFile', outputFile);
+        const blob = new Blob([data.buffer], { type: outputFile.endsWith('.m4a') ? 'audio/mp4' : 'audio/webm' });
+        const audioURL = URL.createObjectURL(blob);
+        extractedAudio.src = audioURL;
+        extractAudioBtn.disabled = false;
+        audioProgress.value = 100;
+    });
+</script>
+</body>
+</html>
